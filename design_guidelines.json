@@ -1,0 +1,76 @@
+{
+  "theme": "Light",
+  "archetype": "Archetype 4: Swiss & High-Contrast (Adapted for Medical Trust)",
+  "vibe": "Professional, clean, highly legible, trustworthy, reducing cognitive load.",
+  "colors": {
+    "background": "#FFFFFF",
+    "surface": "#F8FAFC",
+    "primary": "#0369A1",
+    "primary_hover": "#0284C7",
+    "text_main": "#0F172A",
+    "text_muted": "#64748B",
+    "border": "#E2E8F0",
+    "error": "#EF4444",
+    "success": "#10B981"
+  },
+  "typography": {
+    "heading_font": "Work Sans",
+    "body_font": "IBM Plex Sans",
+    "h1": "text-4xl sm:text-5xl font-semibold tracking-tight text-slate-900",
+    "h2": "text-2xl sm:text-3xl font-medium tracking-tight text-slate-900",
+    "h3": "text-xl sm:text-2xl font-medium text-slate-800",
+    "body": "text-base text-slate-600 leading-relaxed",
+    "small": "text-sm text-slate-500 uppercase tracking-widest font-medium"
+  },
+  "spacing_and_layout": {
+    "philosophy": "Generous Spacing Philosophy with Control Room Grid for dashboard.",
+    "container_padding": "p-6 md:p-8",
+    "grid_gap": "gap-6",
+    "border_radius": "rounded-lg",
+    "card_style": "Flat background (bg-white), 1px solid border (border-slate-200), NO shadow. Hover: slight shadow-sm."
+  },
+  "surfaces_and_micro_themes": {
+    "medical_rule": "Use Flat Solid surfaces. NO Glassmorphism (prevents visual refraction of clinical data).",
+    "header": "Solid white background, border-b border-slate-200. Sticky top with z-50.",
+    "sidebar": "bg-slate-50 border-r border-slate-200."
+  },
+  "components": {
+    "buttons": "Flat, pure primary color (bg-sky-700), high contrast white text. Hover: bg-sky-600. No heavy shadows.",
+    "forms": "Shadcn UI. Use clear borders, focus:ring-2 focus:ring-sky-500. Left-aligned labels.",
+    "tables": "Compact tables, 1px border-b, hover:bg-slate-50. Highlight abnormal states clearly.",
+    "upload_zone": "Large dropzone, p-12, border-2 border-dashed border-slate-300 bg-slate-50 hover:border-sky-500 hover:bg-sky-50 transition-colors."
+  },
+  "motion": {
+    "global": "Minimalist. Micro-interactions for feedback only.",
+    "transitions": "transition-all duration-200 ease-in-out"
+  },
+  "media": {
+    "icons_library": "@phosphor-icons/react",
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1777269749032-d8d458ae594d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2Mzl8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBob3NwaXRhbCUyMGNsaW5pYyUyMGludGVyaW9yfGVufDB8fHx8MTc3ODExMTc4M3ww&ixlib=rb-4.1.0&q=85",
+        "category": "login_background",
+        "description": "Empty hospital corridor for the split-screen login page background. Use with heavy dark overlay if placing text, or clear if just structural."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1631217872822-1c2546d6b864?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzF8MHwxfHNlYXJjaHwyfHxkb2N0b3IlMjBwYXRpZW50JTIwY29uc3VsdGF0aW9ufGVufDB8fHx8MTc3ODExMTc4M3ww&ixlib=rb-4.1.0&q=85",
+        "category": "empty_state",
+        "description": "Doctor reviewing tablet. Use for 'No studies uploaded yet' or onboarding screens."
+      }
+    ]
+  },
+  "accessibility": {
+    "contrast": "Ensure 4.5:1 ratio for text. Blue buttons must have white text.",
+    "data_testid": "MANDATORY on all interactive elements (buttons, inputs, links). Use kebab-case role-based naming (e.g., login-submit-button, dicom-upload-dropzone)."
+  },
+  "instructions_to_main_agent": [
+    "Language MUST be Spanish (e.g., 'Iniciar Sesión', 'Subir Archivo DICOM', 'Pacientes', 'Médicos').",
+    "Implement Role-Based Access logic (Paciente, Clínica/Hospital, Médico Especialista) with Custom JWT Auth.",
+    "The UI is a SaaS dashboard. Use a sidebar or top-nav layout strictly following the Control Room Grid protocol.",
+    "Do NOT use 'Inter' for headings. Use 'Work Sans' or fallback to 'Manrope'.",
+    "Avoid glassmorphism completely. Use solid, flat surfaces with subtle 1px borders to maintain clinical precision and clarity.",
+    "Prioritize the Upload DICOM zone with metadata form (Patient info, assigned doctor dropdown).",
+    "Doctor view should heavily feature a well-structured data table for downloading assigned DICOMs (No viewer needed).",
+    "Use @phosphor-icons/react for clinical dashboard clarity."
+  ]
+}
