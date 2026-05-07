@@ -68,6 +68,11 @@ class UserOut(BaseModel):
     phone: Optional[str] = None
     created_at: str
 
+class AuthResponse(BaseModel):
+    user: UserOut
+    access_token: str
+    token_type: str = "bearer"
+
 class DoctorOut(BaseModel):
     id: str
     full_name: str
@@ -163,7 +168,7 @@ def require_role(*roles: str):
     return dep
 
 # ============ AUTH ROUTES ============
-@api.post("/auth/register", response_model=UserOut)
+@api.post("/auth/register", response_model=AuthResponse)
 async def register(payload: RegisterIn, response: Response):
     role = payload.role.lower().strip()
     if role not in ALLOWED_ROLES:
@@ -187,9 +192,9 @@ async def register(payload: RegisterIn, response: Response):
     await db.users.insert_one(user_doc)
     token = create_access_token(user_doc["id"], email, role)
     set_auth_cookie(response, token)
-    return user_to_dict(user_doc)
+    return {"user": user_to_dict(user_doc), "access_token": token, "token_type": "bearer"}
 
-@api.post("/auth/login", response_model=UserOut)
+@api.post("/auth/login", response_model=AuthResponse)
 async def login(payload: LoginIn, response: Response):
     email = payload.email.lower().strip()
     user = await db.users.find_one({"email": email})
@@ -197,7 +202,7 @@ async def login(payload: LoginIn, response: Response):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
     token = create_access_token(user["id"], email, user["role"])
     set_auth_cookie(response, token)
-    return user_to_dict(user)
+    return {"user": user_to_dict(user), "access_token": token, "token_type": "bearer"}
 
 @api.post("/auth/logout")
 async def logout(response: Response):
@@ -392,10 +397,11 @@ async def shutdown():
     client.close()
 
 app.include_router(api)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_credentials=False,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

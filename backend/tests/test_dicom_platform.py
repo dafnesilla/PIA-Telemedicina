@@ -4,7 +4,9 @@ import uuid
 import requests
 import pytest
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://page-forge-257.preview.emergentagent.com").rstrip("/")
+from dotenv import load_dotenv
+load_dotenv("/app/frontend/.env")
+BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
 API = f"{BASE_URL}/api"
 
 ADMIN_EMAIL = "admin@medicos.com"
@@ -48,7 +50,7 @@ def session_medico():
     })
     assert r.status_code == 200, r.text
     s.email = email
-    s.user = r.json()
+    s.user = r.json()["user"]
     return s
 
 
@@ -57,7 +59,7 @@ def session_admin():
     s = requests.Session()
     r = s.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
     assert r.status_code == 200, r.text
-    s.user = r.json()
+    s.user = r.json()["user"]
     return s
 
 
@@ -78,6 +80,37 @@ class TestAuth:
     def test_login_invalid(self):
         r = requests.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": "wrong"})
         assert r.status_code == 401
+
+    def test_login_returns_token_shape(self):
+        r = requests.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
+        assert r.status_code == 200
+        j = r.json()
+        assert "user" in j and "access_token" in j and j.get("token_type") == "bearer"
+        assert isinstance(j["access_token"], str) and len(j["access_token"]) > 20
+        assert j["user"]["email"] == ADMIN_EMAIL
+
+    def test_bearer_token_works_on_me(self):
+        r = requests.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
+        token = r.json()["access_token"]
+        r2 = requests.get(f"{API}/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert r2.status_code == 200
+        assert r2.json()["email"] == ADMIN_EMAIL
+
+    def test_bearer_token_works_on_doctors_studies_stats(self):
+        r = requests.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
+        token = r.json()["access_token"]
+        h = {"Authorization": f"Bearer {token}"}
+        assert requests.get(f"{API}/doctors", headers=h).status_code == 200
+        assert requests.get(f"{API}/studies", headers=h).status_code == 200
+        assert requests.get(f"{API}/stats", headers=h).status_code == 200
+
+    def test_register_returns_token_shape(self):
+        r = requests.post(f"{API}/auth/register", json={
+            "email": _unique("tok"), "password": "pass1234", "full_name": "Tok", "role": "paciente"
+        })
+        assert r.status_code == 200
+        j = r.json()
+        assert "access_token" in j and "user" in j and j.get("token_type") == "bearer"
 
     def test_login_sets_cookie(self):
         s = requests.Session()

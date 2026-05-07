@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import api, { formatApiError } from "@/lib/api";
+import api, { formatApiError, tokenStore } from "@/lib/api";
 
 const AuthContext = createContext(null);
 
@@ -9,10 +9,15 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     (async () => {
+      if (!tokenStore.get()) {
+        setUser(false);
+        return;
+      }
       try {
         const { data } = await api.get("/auth/me");
         setUser(data);
       } catch {
+        tokenStore.clear();
         setUser(false);
       }
     })();
@@ -22,7 +27,8 @@ export function AuthProvider({ children }) {
     setError("");
     try {
       const { data } = await api.post("/auth/login", { email, password });
-      setUser(data);
+      tokenStore.set(data.access_token);
+      setUser(data.user);
       return { ok: true };
     } catch (e) {
       const msg = formatApiError(e);
@@ -35,7 +41,8 @@ export function AuthProvider({ children }) {
     setError("");
     try {
       const { data } = await api.post("/auth/register", payload);
-      setUser(data);
+      tokenStore.set(data.access_token);
+      setUser(data.user);
       return { ok: true };
     } catch (e) {
       const msg = formatApiError(e);
@@ -48,6 +55,7 @@ export function AuthProvider({ children }) {
     try {
       await api.post("/auth/logout");
     } catch {}
+    tokenStore.clear();
     setUser(false);
   };
 

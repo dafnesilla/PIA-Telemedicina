@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import api, { API, formatApiError } from "@/lib/api";
-import axios from "axios";
+import api, { formatApiError } from "@/lib/api";
 import {
   DownloadSimple,
   Trash,
@@ -33,10 +32,7 @@ export default function Studies() {
 
   const onDownload = async (s) => {
     try {
-      const res = await axios.get(`${API}/studies/${s.id}/download`, {
-        withCredentials: true,
-        responseType: "blob",
-      });
+      const res = await api.get(`/studies/${s.id}/download`, { responseType: "blob" });
       const blob = new Blob([res.data], { type: "application/dicom" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
