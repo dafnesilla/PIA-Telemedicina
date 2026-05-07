@@ -239,8 +239,54 @@ def _study_public(doc: dict) -> dict:
         "created_at": doc["created_at"],
     }
 
+# ============ ACCESS LOGS (audit trail) ============
+async def log_access(request: Request, user: dict, study: dict, action: str):
+    """Record an audit trail entry for a study action."""
+    ip = None
+    try:
+        if request.client:
+            ip = request.client.host
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            ip = xff.split(",")[0].strip()
+    except Exception:
+        pass
+    entry = {
+        "id": str(uuid.uuid4()),
+        "study_id": study["id"],
+        "study_filename": study["filename"],
+        "patient_name": study["patient_name"],
+        "uploader_id": study["uploader_id"],
+        "doctor_id": study["doctor_id"],
+        "actor_id": user["id"],
+        "actor_name": user["full_name"],
+        "actor_role": user["role"],
+        "action": action,  # upload | download | delete
+        "ip_address": ip,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.access_logs.insert_one(entry)
+    except Exception as e:
+        logger.warning(f"Failed to log access: {e}")
+
+def _log_public(doc: dict) -> dict:
+    return {
+        "id": doc["id"],
+        "study_id": doc["study_id"],
+        "study_filename": doc.get("study_filename", ""),
+        "patient_name": doc.get("patient_name", ""),
+        "actor_id": doc["actor_id"],
+        "actor_name": doc["actor_name"],
+        "actor_role": doc["actor_role"],
+        "action": doc["action"],
+        "ip_address": doc.get("ip_address"),
+        "timestamp": doc["timestamp"],
+    }
+
 @api.post("/studies/upload", response_model=StudyOut)
 async def upload_study(
+    request: Request,
     file: UploadFile = File(...),
     patient_name: str = Form(...),
     doctor_id: str = Form(...),
@@ -288,6 +334,7 @@ async def upload_study(
         "created_at": now,
     }
     await db.studies.insert_one(doc)
+    await log_access(request, user, doc, "upload")
     return _study_public(doc)
 
 @api.get("/studies", response_model=List[StudyOut])
@@ -303,7 +350,7 @@ async def list_studies(user: dict = Depends(get_current_user)):
     return [_study_public(d) for d in docs]
 
 @api.get("/studies/{study_id}/download")
-async def download_study(study_id: str, user: dict = Depends(get_current_user)):
+async def download_study(study_id: str, request: Request, user: dict = Depends(get_current_user)):
     doc = await db.studies.find_one({"id": study_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Estudio no encontrado")
@@ -327,6 +374,7 @@ async def download_study(study_id: str, user: dict = Depends(get_current_user)):
     except Exception:
         raise HTTPException(status_code=500, detail="Error al descifrar el archivo")
 
+    await log_access(request, user, doc, "download")
     return StreamingResponse(
         io.BytesIO(data),
         media_type="application/dicom",
@@ -334,7 +382,7 @@ async def download_study(study_id: str, user: dict = Depends(get_current_user)):
     )
 
 @api.delete("/studies/{study_id}")
-async def delete_study(study_id: str, user: dict = Depends(get_current_user)):
+async def delete_study(study_id: str, request: Request, user: dict = Depends(get_current_user)):
     doc = await db.studies.find_one({"id": study_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Estudio no encontrado")
@@ -347,7 +395,42 @@ async def delete_study(study_id: str, user: dict = Depends(get_current_user)):
         except Exception:
             pass
     await db.studies.delete_one({"id": study_id})
+    await log_access(request, user, doc, "delete")
     return {"ok": True}
+
+# ============ ACCESS LOG ENDPOINTS ============
+@api.get("/logs")
+async def list_logs(user: dict = Depends(get_current_user), limit: int = 200):
+    """Return audit logs relevant to the current user.
+    - paciente/clinica: logs of studies they uploaded
+    - medico: logs of studies assigned to them
+    """
+    role = user["role"]
+    if role == "medico":
+        query = {"doctor_id": user["id"]}
+    elif role in ("paciente", "clinica"):
+        query = {"uploader_id": user["id"]}
+    else:
+        query = {}
+    docs = await db.access_logs.find(query, {"_id": 0}).sort("timestamp", -1).to_list(max(1, min(limit, 1000)))
+    return [_log_public(d) for d in docs]
+
+@api.get("/studies/{study_id}/logs")
+async def study_logs(study_id: str, user: dict = Depends(get_current_user)):
+    """Return audit logs for a specific study (uploader or assigned doctor only)."""
+    study = await db.studies.find_one({"id": study_id}, {"_id": 0})
+    if not study:
+        raise HTTPException(status_code=404, detail="Estudio no encontrado")
+    if user["role"] == "medico":
+        if study["doctor_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="No tienes acceso a este estudio")
+    elif user["role"] in ("paciente", "clinica"):
+        if study["uploader_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="No tienes acceso a este estudio")
+    else:
+        raise HTTPException(status_code=403, detail="Permiso denegado")
+    docs = await db.access_logs.find({"study_id": study_id}, {"_id": 0}).sort("timestamp", -1).to_list(1000)
+    return [_log_public(d) for d in docs]
 
 @api.get("/stats")
 async def stats(user: dict = Depends(get_current_user)):
@@ -374,6 +457,10 @@ async def startup():
     await db.studies.create_index("doctor_id")
     await db.studies.create_index("uploader_id")
     await db.studies.create_index("created_at")
+    await db.access_logs.create_index("study_id")
+    await db.access_logs.create_index("uploader_id")
+    await db.access_logs.create_index("doctor_id")
+    await db.access_logs.create_index("timestamp")
     # seed admin (as medico for test)
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@medicos.com")
     admin_pwd = os.environ.get("ADMIN_PASSWORD", "admin123")

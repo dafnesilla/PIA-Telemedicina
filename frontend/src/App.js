@@ -8,6 +8,7 @@ import DashboardLayout from "@/pages/DashboardLayout";
 import Dashboard from "@/pages/Dashboard";
 import Upload from "@/pages/Upload";
 import Studies from "@/pages/Studies";
+import Logs from "@/pages/Logs";
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -54,6 +55,7 @@ function App() {
               }
             />
             <Route path="studies" element={<Studies />} />
+            <Route path="logs" element={<Logs />} />
           </Route>
           <Route path="*" element={<Navigate to="/app" replace />} />
         </Routes>

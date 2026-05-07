@@ -9,14 +9,22 @@ import {
   ShieldCheck,
   FileLock,
   ArrowRight,
+  ClockCounterClockwise,
+  DownloadSimple,
+  Trash,
 } from "@phosphor-icons/react";
 
 export default function Dashboard() {
   const { user } = useAuth();
   const [stats, setStats] = useState(null);
+  const [recentLogs, setRecentLogs] = useState([]);
 
   useEffect(() => {
     api.get("/stats").then((r) => setStats(r.data)).catch(() => setStats({}));
+    api
+      .get("/logs", { params: { limit: 5 } })
+      .then((r) => setRecentLogs(r.data.slice(0, 5)))
+      .catch(() => setRecentLogs([]));
   }, []);
 
   const isMedico = user.role === "medico";
@@ -26,7 +34,7 @@ export default function Dashboard() {
     <div className="max-w-6xl mx-auto" data-testid="dashboard-page">
       <p className="label-small">Panel</p>
       <h1 className="text-3xl sm:text-4xl font-semibold text-slate-900 mt-1 mb-1">
-        Hola, {user.full_name.split(" ")[0]}
+        Hola, {user.full_name}
       </h1>
       <p className="text-slate-500 mb-8">
         {isMedico
@@ -95,6 +103,69 @@ export default function Dashboard() {
             contraseñas protegidas con bcrypt.
           </p>
         </div>
+      </div>
+
+      {/* Recent activity */}
+      <div className="mt-8" data-testid="recent-activity">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-lg font-medium text-slate-900 flex items-center gap-2">
+            <ClockCounterClockwise size={20} weight="duotone" className="text-sky-700" />
+            Actividad reciente
+          </h3>
+          <Link
+            to="/app/logs"
+            className="text-sm text-sky-700 hover:text-sky-600 font-medium"
+            data-testid="view-all-logs-link"
+          >
+            Ver todo →
+          </Link>
+        </div>
+        {recentLogs.length === 0 ? (
+          <div className="text-sm text-slate-500 bg-white border border-slate-200 rounded-lg p-6 text-center">
+            Aún no hay actividad registrada.
+          </div>
+        ) : (
+          <ul className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100">
+            {recentLogs.map((l) => {
+              const Icon =
+                l.action === "upload"
+                  ? UploadSimple
+                  : l.action === "download"
+                  ? DownloadSimple
+                  : Trash;
+              const color =
+                l.action === "upload"
+                  ? "text-sky-700"
+                  : l.action === "download"
+                  ? "text-emerald-600"
+                  : "text-red-600";
+              const label =
+                l.action === "upload"
+                  ? "subió"
+                  : l.action === "download"
+                  ? "descargó"
+                  : "eliminó";
+              return (
+                <li key={l.id} className="flex items-center gap-3 px-4 py-3 text-sm">
+                  <Icon size={18} weight="duotone" className={color} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-slate-900 truncate">
+                      <span className="font-medium">{l.actor_name}</span>{" "}
+                      <span className="text-slate-500">{label}</span>{" "}
+                      <span className="font-medium">{l.study_filename}</span>
+                    </div>
+                    <div className="text-xs text-slate-500 truncate">
+                      Paciente: {l.patient_name}
+                    </div>
+                  </div>
+                  <div className="text-xs text-slate-500 flex-shrink-0">
+                    {new Date(l.timestamp).toLocaleString("es")}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </div>
   );

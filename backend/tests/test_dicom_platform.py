@@ -254,6 +254,94 @@ class TestStats:
         assert r.status_code == 401
 
 
+# ---------- ACCESS LOGS (audit trail) ----------
+class TestAccessLogs:
+    def test_upload_creates_log_entry(self, session_paciente, session_medico):
+        # paciente should see an 'upload' entry for his uploaded study
+        r = session_paciente.get(f"{API}/logs")
+        assert r.status_code == 200, r.text
+        logs = r.json()
+        uploads = [l for l in logs if l["action"] == "upload" and l["study_id"] == pytest.study_id_paciente]
+        assert len(uploads) >= 1
+        u = uploads[0]
+        assert u["actor_role"] == "paciente"
+        assert u["actor_name"] == "Test Paciente"
+        # shape
+        for k in ("id", "study_id", "study_filename", "patient_name", "actor_id", "actor_name",
+                  "actor_role", "action", "timestamp"):
+            assert k in u
+
+    def test_download_creates_log_entry(self, session_paciente, session_medico):
+        # medico already downloaded in earlier test; trigger one more explicit download as uploader
+        r0 = session_paciente.get(f"{API}/studies/{pytest.study_id_paciente}/download")
+        assert r0.status_code == 200
+        r = session_paciente.get(f"{API}/logs")
+        assert r.status_code == 200
+        downloads = [l for l in r.json()
+                     if l["action"] == "download" and l["study_id"] == pytest.study_id_paciente]
+        assert len(downloads) >= 1
+
+    def test_medico_sees_logs_of_assigned_studies(self, session_medico):
+        r = session_medico.get(f"{API}/logs")
+        assert r.status_code == 200
+        logs = r.json()
+        # must contain at least upload & download for paciente study
+        actions = {(l["action"], l["study_id"]) for l in logs}
+        assert ("upload", pytest.study_id_paciente) in actions
+        assert ("download", pytest.study_id_paciente) in actions
+
+    def test_paciente_does_not_see_other_uploads(self, session_paciente, session_clinica, session_medico):
+        # upload a study by clinica assigned to same medico; paciente must NOT see it
+        r = _upload(session_clinica, session_medico.user["id"], filename="clinica2.dcm")
+        assert r.status_code == 200
+        other_id = r.json()["id"]
+        r2 = session_paciente.get(f"{API}/logs")
+        assert r2.status_code == 200
+        ids = {l["study_id"] for l in r2.json()}
+        assert other_id not in ids
+        # cleanup
+        session_clinica.delete(f"{API}/studies/{other_id}")
+
+    def test_study_logs_for_uploader(self, session_paciente):
+        r = session_paciente.get(f"{API}/studies/{pytest.study_id_paciente}/logs")
+        assert r.status_code == 200
+        logs = r.json()
+        assert len(logs) >= 1
+        for l in logs:
+            assert l["study_id"] == pytest.study_id_paciente
+
+    def test_study_logs_for_assigned_medico(self, session_medico):
+        r = session_medico.get(f"{API}/studies/{pytest.study_id_paciente}/logs")
+        assert r.status_code == 200
+        assert len(r.json()) >= 1
+
+    def test_study_logs_forbidden_third_party(self, session_clinica):
+        r = session_clinica.get(f"{API}/studies/{pytest.study_id_paciente}/logs")
+        assert r.status_code == 403
+
+    def test_study_logs_404_invalid(self, session_paciente):
+        r = session_paciente.get(f"{API}/studies/{uuid.uuid4()}/logs")
+        assert r.status_code == 404
+
+    def test_logs_requires_auth(self):
+        r = requests.get(f"{API}/logs")
+        assert r.status_code == 401
+
+    def test_delete_creates_log_entry(self, session_paciente, session_medico):
+        # upload a throwaway study, then delete it, then verify medico sees a delete log
+        r = _upload(session_paciente, session_medico.user["id"], filename="to_delete.dcm")
+        assert r.status_code == 200
+        sid = r.json()["id"]
+        rd = session_paciente.delete(f"{API}/studies/{sid}")
+        assert rd.status_code == 200
+        # medico still sees logs (indexed by doctor_id on the log, even after study deletion)
+        r2 = session_medico.get(f"{API}/logs")
+        assert r2.status_code == 200
+        deletes = [l for l in r2.json() if l["action"] == "delete" and l["study_id"] == sid]
+        assert len(deletes) >= 1
+        assert deletes[0]["actor_role"] == "paciente"
+
+
 # ---------- CLEANUP ----------
 def test_zz_cleanup(session_paciente):
     # delete remaining study

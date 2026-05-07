@@ -10,6 +10,7 @@ import {
   User,
   Stethoscope,
   Buildings,
+  ClockCounterClockwise,
 } from "@phosphor-icons/react";
 
 const roleLabel = { paciente: "Paciente", clinica: "Hospital / Clínica", medico: "Médico Especialista" };
@@ -55,6 +56,12 @@ export default function DashboardLayout() {
             icon={FolderOpen}
             label={user.role === "medico" ? "Estudios Recibidos" : "Mis Estudios"}
             testid="nav-studies"
+          />
+          <SideLink
+            to="/app/logs"
+            icon={ClockCounterClockwise}
+            label="Historial de accesos"
+            testid="nav-logs"
           />
         </nav>
         <div className="p-3 border-t border-slate-200">
