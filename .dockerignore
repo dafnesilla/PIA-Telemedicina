@@ -1,0 +1,11 @@
+.git
+.github
+.emergent
+node_modules
+build
+__pycache__
+*.pyc
+.pytest_cache
+dicom_storage
+*.log
+.env

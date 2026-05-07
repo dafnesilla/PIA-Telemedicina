@@ -1,0 +1,70 @@
+version: "3.9"
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: meddicom_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - meddicom_net
+    # No public port — only reachable from other containers
+
+  orthanc:
+    image: jodogne/orthanc:1.12.4
+    container_name: meddicom_orthanc
+    restart: unless-stopped
+    volumes:
+      - orthanc_data:/var/lib/orthanc/db
+      - ./orthanc/orthanc.json:/etc/orthanc/orthanc.json:ro
+    networks:
+      - meddicom_net
+    # No public port — only backend talks to it
+
+  backend:
+    build:
+      context: ./backend
+    container_name: meddicom_backend
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+      - orthanc
+    environment:
+      MONGO_URL: "mongodb://mongodb:27017"
+      DB_NAME: "${DB_NAME:-medicos_dicom_db}"
+      CORS_ORIGINS: "*"
+      JWT_SECRET: "${JWT_SECRET}"
+      FERNET_KEY: "${FERNET_KEY}"
+      DICOM_STORAGE_DIR: "/app/dicom_storage"
+      ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@medicos.com}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin123}"
+      ORTHANC_URL: "http://orthanc:8042"
+      ORTHANC_USER: "${ORTHANC_USER:-meddicom}"
+      ORTHANC_PASSWORD: "${ORTHANC_PASSWORD:-meddicom_secret_change_me}"
+    volumes:
+      - backend_storage:/app/dicom_storage
+    networks:
+      - meddicom_net
+    # No public port — only nginx (frontend) talks to it
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: meddicom_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:80"   # Only localhost — private
+    networks:
+      - meddicom_net
+
+volumes:
+  mongo_data:
+  orthanc_data:
+  backend_storage:
+
+networks:
+  meddicom_net:
+    driver: bridge
