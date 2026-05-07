@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 4: Orthanc PACS integration + in-app notifications. Backend pytest 51/51 PASS (38 prior regression + 4 Orthanc + 9 Notifications). Frontend E2E validated the full bell flow end-to-end on the public URL.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/studies/upload (Orthanc dedupe)", "issue": "Orthanc dedupes by SOPInstanceUID. If two uploads share the same generated DICOM payload, both study records point to the same Orthanc instance; deleting one removes the binary from Orthanc while the other Mongo record remains and would 404 on download. Not a production concern (real DICOMs have unique UIDs) but affects tests using a fixed payload — handled by generating fresh bytes per upload in the helper."},
+      {"endpoint": "/api/studies/{id}/download (legacy fallback)", "issue": "Legacy Fernet-encrypted studies still downloadable via fallback — behaves as designed; no issue, just flagged for future removal."},
+      {"endpoint": "orthanc_delete", "issue": "Errors from Orthanc are only logged (warning), Mongo delete proceeds. Acceptable for availability, but could cause Orthanc orphans; consider hard-fail or retry queue."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_dicom_platform.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: make orthanc_delete surface failures (at least count them) so admins know when an Orthanc instance leak happens.",
+    "Optional: consider WebSocket/SSE push for notifications instead of 30s polling for lower latency UX."
+  ],
+  "critical_code_review_comments": [
+    "server.py orthanc_upload correctly maps Orthanc 4xx → 400 with spec-matching message 'Orthanc rechazó el archivo...' and Orthanc connection errors → 502.",
+    "Upload endpoint persists orthanc_id + orthanc_study_id + storage='orthanc' before notifying — idempotent shape.",
+    "create_notification swallows errors but logs; notification failure will NOT fail the upload — good resilience.",
+    "GET /api/notifications filters strictly by user_id and sorts desc by created_at — correct.",
+    "POST /api/notifications/{id}/read uses {id, user_id} compound match → prevents cross-user marking; returns 404 on miss (verified).",
+    "NotificationBell.jsx: polling every 30s for unread-count; does optimistic UI update on click and markAll. Clean.",
+    "DashboardLayout.jsx mounts NotificationBell in the sticky header — visible on all authenticated routes.",
+    "server.py now ~625 lines; still within reasonable limit but approaching threshold — consider splitting into auth.py / studies.py / notifications.py modules soon."
+  ],
+  "updated_files": ["/app/backend/tests/test_dicom_platform.py"],
+  "success_rate": {"backend": "100% (51/51)", "frontend": "100% on tested flow (bell visible, badge, dropdown items, click→navigate+decrement, marcar todas→0)"},
+  "test_credentials": "admin@medicos.com / admin123 (medico seed). Orthanc: meddicom / meddicom_secret_2026 @ http://localhost:8042",
+  "seed_data_creation": "pytest registers TEST_pac_*/TEST_cli_*/TEST_med_* users and cleans up at the end. E2E test uses /tmp/e2e_notif.dcm (generated once via pydicom) and a fresh e2e_pac_* paciente per run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 51 backend tests pass including 4 Orthanc (upload→storage=orthanc + orthanc_id/orthanc_study_id set, 400 on non-DICOM with exact spec message, download md5==upload md5, delete removes Orthanc instance) and 9 Notifications (create on upload, isolated per user, desc order, unread-count, mark one, 404 on wrong user/invalid id, mark-all). Frontend bell flow validated end-to-end. Use /tmp/e2e_notif.dcm or re-generate via the helper in test_dicom_platform.py::_make_dicom_bytes. Test file has deprecation warnings from pydicom 3.x API (is_little_endian/write_like_original) but they don't affect correctness.",
+  "rca_of_the_issue": "During test development, the original static DICOM_BYTES caused cross-test Orthanc dedupe: Orthanc returns the same instance_id for identical SOPInstanceUIDs. When an unrelated test deleted its study, the shared Orthanc binary disappeared, leaking 404s to other tests. Fix: _upload() now regenerates a fresh DICOM with unique UIDs for each upload by default; tests that need byte-identical comparison pass data=DICOM_BYTES explicitly."
+}

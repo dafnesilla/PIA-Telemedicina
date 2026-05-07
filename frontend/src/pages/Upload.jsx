@@ -62,7 +62,7 @@ export default function Upload() {
       await api.post("/studies/upload", fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      setSuccess("Estudio subido y cifrado correctamente.");
+      setSuccess("Estudio enviado a Orthanc y asignado al médico correctamente.");
       setTimeout(() => navigate("/app/studies"), 900);
     } catch (e2) {
       setErr(formatApiError(e2));
@@ -78,7 +78,7 @@ export default function Upload() {
         Subir estudio DICOM
       </h1>
       <p className="text-slate-500 mb-8">
-        El archivo se cifrará automáticamente antes de almacenarse y se asignará al médico seleccionado.
+        El archivo se enviará al servidor PACS <b>Orthanc</b> y se asignará al médico seleccionado. Solo se aceptan archivos DICOM válidos (.dcm).
       </p>
 
       <form onSubmit={onSubmit} className="space-y-6" data-testid="upload-form">
@@ -131,7 +131,7 @@ export default function Upload() {
                 Seleccionar archivo
                 <input
                   type="file"
-                  accept=".dcm,application/dicom,*/*"
+                  accept=".dcm,application/dicom"
                   onChange={(e) => setFile(e.target.files?.[0] || null)}
                   className="hidden"
                   data-testid="file-input"
@@ -261,7 +261,7 @@ export default function Upload() {
             data-testid="submit-upload-button"
           >
             <UploadSimple size={18} weight="bold" />
-            {loading ? "Subiendo..." : "Subir y cifrar"}
+            {loading ? "Enviando a Orthanc..." : "Subir a Orthanc"}
           </button>
         </div>
       </form>

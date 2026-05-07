@@ -1,6 +1,8 @@
-"""Backend tests for Plataforma DICOM Médica - auth, doctors, studies, stats."""
+"""Backend tests for Plataforma DICOM Médica - auth, doctors, studies, stats, orthanc, notifications."""
 import os
+import io
 import uuid
+import hashlib
 import requests
 import pytest
 
@@ -11,6 +13,36 @@ API = f"{BASE_URL}/api"
 
 ADMIN_EMAIL = "admin@medicos.com"
 ADMIN_PASSWORD = "admin123"
+
+ORTHANC_URL = "http://localhost:8042"
+ORTHANC_AUTH = ("meddicom", "meddicom_secret_2026")
+
+
+def _make_dicom_bytes(patient_name: str = "Test^Patient") -> bytes:
+    """Generate a minimal valid DICOM file in-memory using pydicom."""
+    from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
+    file_meta = FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.7"  # SC
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    file_meta.ImplementationClassUID = generate_uid()
+
+    ds = FileDataset(None, {}, file_meta=file_meta, preamble=b"\0" * 128)
+    ds.PatientName = patient_name
+    ds.PatientID = "TEST001"
+    ds.StudyInstanceUID = generate_uid()
+    ds.SeriesInstanceUID = generate_uid()
+    ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+    ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
+    ds.Modality = "OT"
+    ds.is_little_endian = True
+    ds.is_implicit_VR = False
+
+    buf = io.BytesIO()
+    ds.save_as(buf, write_like_original=False)
+    return buf.getvalue()
 
 
 def _unique(prefix):
@@ -152,19 +184,22 @@ class TestDoctors:
 
 
 # ---------- STUDIES ----------
-DICOM_BYTES = b"DICM" + b"\x00" * 128 + b"TEST_PAYLOAD_" + os.urandom(64)
+# Valid DICOM bytes generated once per module (for md5 check); other uploads use fresh bytes
+DICOM_BYTES = _make_dicom_bytes()
 
 
-def _upload(session, doctor_id, filename="test.dcm"):
-    files = {"file": (filename, DICOM_BYTES, "application/dicom")}
-    data = {"patient_name": "Juan Paciente", "doctor_id": doctor_id,
-            "study_description": "RX Tórax", "modality": "CR"}
-    return session.post(f"{API}/studies/upload", files=files, data=data)
+def _upload(session, doctor_id, filename="test.dcm", data=None):
+    # Generate fresh DICOM with unique UIDs to avoid Orthanc instance dedupe collisions
+    payload = data if data is not None else _make_dicom_bytes()
+    files = {"file": (filename, payload, "application/dicom")}
+    data_form = {"patient_name": "Juan Paciente", "doctor_id": doctor_id,
+                 "study_description": "RX Tórax", "modality": "CR"}
+    return session.post(f"{API}/studies/upload", files=files, data=data_form)
 
 
 class TestStudies:
     def test_upload_by_paciente(self, session_paciente, session_medico):
-        r = _upload(session_paciente, session_medico.user["id"])
+        r = _upload(session_paciente, session_medico.user["id"], data=DICOM_BYTES)
         assert r.status_code == 200, r.text
         j = r.json()
         assert j["size_bytes"] == len(DICOM_BYTES)
@@ -340,6 +375,128 @@ class TestAccessLogs:
         deletes = [l for l in r2.json() if l["action"] == "delete" and l["study_id"] == sid]
         assert len(deletes) >= 1
         assert deletes[0]["actor_role"] == "paciente"
+
+
+# ---------- ORTHANC INTEGRATION ----------
+class TestOrthanc:
+    def test_upload_stores_in_orthanc(self, session_paciente, session_medico):
+        # Use fresh DICOM bytes so Orthanc creates a distinct instance we can delete independently
+        pytest.orthanc_dicom_bytes = _make_dicom_bytes()
+        r = _upload(session_paciente, session_medico.user["id"],
+                    filename="orthanc_test.dcm", data=pytest.orthanc_dicom_bytes)
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j["storage"] == "orthanc"
+        assert j.get("orthanc_id") and len(j["orthanc_id"]) > 10
+        assert j.get("orthanc_study_id") and len(j["orthanc_study_id"]) > 10
+        pytest.orthanc_study_id = j["id"]
+        pytest.orthanc_instance_id = j["orthanc_id"]
+        # verify instance exists in Orthanc directly
+        r2 = requests.get(f"{ORTHANC_URL}/instances/{j['orthanc_id']}", auth=ORTHANC_AUTH, timeout=10)
+        assert r2.status_code == 200
+
+    def test_upload_rejects_non_dicom(self, session_paciente, session_medico):
+        files = {"file": ("bad.dcm", b"this is not dicom at all", "application/dicom")}
+        data = {"patient_name": "X", "doctor_id": session_medico.user["id"]}
+        r = session_paciente.post(f"{API}/studies/upload", files=files, data=data)
+        assert r.status_code == 400
+        assert "Orthanc rechazó el archivo" in r.text
+
+    def test_download_md5_matches_original(self, session_paciente):
+        r = session_paciente.get(f"{API}/studies/{pytest.orthanc_study_id}/download")
+        assert r.status_code == 200
+        # Orthanc should return identical bytes
+        assert hashlib.md5(r.content).hexdigest() == hashlib.md5(pytest.orthanc_dicom_bytes).hexdigest()
+
+    def test_delete_removes_from_orthanc(self, session_paciente):
+        instance_id = pytest.orthanc_instance_id
+        # verify instance exists
+        r0 = requests.get(f"{ORTHANC_URL}/instances/{instance_id}", auth=ORTHANC_AUTH, timeout=10)
+        assert r0.status_code == 200
+        # delete via API
+        rd = session_paciente.delete(f"{API}/studies/{pytest.orthanc_study_id}")
+        assert rd.status_code == 200
+        # verify instance removed from Orthanc
+        r1 = requests.get(f"{ORTHANC_URL}/instances/{instance_id}", auth=ORTHANC_AUTH, timeout=10)
+        assert r1.status_code == 404
+
+
+# ---------- NOTIFICATIONS ----------
+class TestNotifications:
+    def test_upload_creates_notification_for_doctor(self, session_paciente, session_medico):
+        r = _upload(session_paciente, session_medico.user["id"], filename="notif1.dcm")
+        assert r.status_code == 200
+        sid = r.json()["id"]
+        pytest.notif_study_id = sid
+        # doctor should have a notification
+        rn = session_medico.get(f"{API}/notifications")
+        assert rn.status_code == 200
+        items = rn.json()
+        match = [n for n in items if n["study_id"] == sid]
+        assert len(match) == 1
+        n = match[0]
+        assert n["type"] == "study_assigned"
+        assert n["title"] == "Nuevo estudio asignado"
+        assert n["read"] is False
+        pytest.notif_id = n["id"]
+
+    def test_notifications_only_for_authed_user(self, session_paciente):
+        # paciente should NOT see doctor's notifications
+        r = session_paciente.get(f"{API}/notifications")
+        assert r.status_code == 200
+        for n in r.json():
+            # no notification referencing doctor's study should be here
+            assert n.get("type") != "study_assigned" or n.get("study_id") != pytest.notif_study_id
+
+    def test_notifications_sorted_desc(self, session_paciente, session_medico):
+        # create another upload to ensure >=2 notifs
+        r = _upload(session_paciente, session_medico.user["id"], filename="notif2.dcm")
+        assert r.status_code == 200
+        pytest.notif_study_id_2 = r.json()["id"]
+        rn = session_medico.get(f"{API}/notifications")
+        items = rn.json()
+        assert len(items) >= 2
+        timestamps = [n["created_at"] for n in items]
+        assert timestamps == sorted(timestamps, reverse=True)
+
+    def test_unread_count(self, session_medico):
+        r = session_medico.get(f"{API}/notifications/unread-count")
+        assert r.status_code == 200
+        j = r.json()
+        assert "count" in j
+        assert isinstance(j["count"], int)
+        assert j["count"] >= 2
+
+    def test_mark_one_read(self, session_medico):
+        before = session_medico.get(f"{API}/notifications/unread-count").json()["count"]
+        r = session_medico.post(f"{API}/notifications/{pytest.notif_id}/read")
+        assert r.status_code == 200
+        after = session_medico.get(f"{API}/notifications/unread-count").json()["count"]
+        assert after == before - 1
+        # verify in list
+        items = session_medico.get(f"{API}/notifications").json()
+        n = next(n for n in items if n["id"] == pytest.notif_id)
+        assert n["read"] is True
+
+    def test_mark_read_404_wrong_user(self, session_paciente):
+        r = session_paciente.post(f"{API}/notifications/{pytest.notif_id}/read")
+        assert r.status_code == 404
+
+    def test_mark_read_404_invalid_id(self, session_medico):
+        r = session_medico.post(f"{API}/notifications/{uuid.uuid4()}/read")
+        assert r.status_code == 404
+
+    def test_mark_all_read(self, session_medico):
+        r = session_medico.post(f"{API}/notifications/read-all")
+        assert r.status_code == 200
+        c = session_medico.get(f"{API}/notifications/unread-count").json()["count"]
+        assert c == 0
+
+    def test_cleanup_notif_studies(self, session_paciente):
+        for sid_attr in ("notif_study_id", "notif_study_id_2"):
+            sid = getattr(pytest, sid_attr, None)
+            if sid:
+                session_paciente.delete(f"{API}/studies/{sid}")
 
 
 # ---------- CLEANUP ----------

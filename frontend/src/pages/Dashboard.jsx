@@ -58,9 +58,9 @@ export default function Dashboard() {
         />
         <StatCard
           icon={ShieldCheck}
-          label="Cifrado"
-          value="AES"
-          suffix="activo"
+          label="Almacenamiento"
+          value="Orthanc"
+          suffix="PACS"
           testid="stat-encryption"
         />
       </div>
@@ -97,10 +97,10 @@ export default function Dashboard() {
             Privacidad y seguridad
           </h3>
           <p className="text-sm text-slate-600 leading-relaxed">
-            Tus archivos DICOM se almacenan cifrados con AES (Fernet) en
-            reposo. El acceso a cada estudio se limita al usuario que lo subió
-            y al médico asignado, con tokens JWT para la autenticación y
-            contraseñas protegidas con bcrypt.
+            Tus archivos DICOM se almacenan en un servidor <b>Orthanc</b> (PACS)
+            con autenticación HTTP y compresión. El acceso a cada estudio se
+            limita al usuario que lo subió y al médico asignado, con tokens JWT
+            para la autenticación y contraseñas protegidas con bcrypt.
           </p>
         </div>
       </div>

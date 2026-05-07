@@ -9,6 +9,7 @@ import uuid
 import logging
 import bcrypt
 import jwt
+import httpx
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -27,6 +28,11 @@ JWT_SECRET = os.environ["JWT_SECRET"]
 FERNET_KEY = os.environ["FERNET_KEY"]
 STORAGE_DIR = Path(os.environ["DICOM_STORAGE_DIR"])
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+ORTHANC_URL = os.environ.get("ORTHANC_URL", "http://localhost:8042").rstrip("/")
+ORTHANC_USER = os.environ.get("ORTHANC_USER", "")
+ORTHANC_PASSWORD = os.environ.get("ORTHANC_PASSWORD", "")
+ORTHANC_AUTH = (ORTHANC_USER, ORTHANC_PASSWORD) if ORTHANC_USER else None
 
 JWT_ALG = "HS256"
 ACCESS_TTL_MIN = 60 * 24  # 24h for convenience in MVP
@@ -95,6 +101,9 @@ class StudyOut(BaseModel):
     doctor_id: str
     doctor_name: str
     created_at: str
+    orthanc_id: Optional[str] = None
+    orthanc_study_id: Optional[str] = None
+    storage: str = "local"
 
 # ============ AUTH HELPERS ============
 def hash_password(password: str) -> str:
@@ -237,7 +246,50 @@ def _study_public(doc: dict) -> dict:
         "doctor_id": doc["doctor_id"],
         "doctor_name": doc["doctor_name"],
         "created_at": doc["created_at"],
+        "orthanc_id": doc.get("orthanc_id"),
+        "orthanc_study_id": doc.get("orthanc_study_id"),
+        "storage": doc.get("storage", "local"),
     }
+
+# ============ ORTHANC CLIENT ============
+async def orthanc_upload(data: bytes) -> dict:
+    """Upload DICOM bytes to Orthanc. Returns {"ID": instance_id, "ParentStudy": study_uid, ...}"""
+    try:
+        async with httpx.AsyncClient(auth=ORTHANC_AUTH, timeout=30.0) as cli:
+            r = await cli.post(f"{ORTHANC_URL}/instances", content=data,
+                               headers={"Content-Type": "application/dicom"})
+            if r.status_code >= 400:
+                raise HTTPException(status_code=400,
+                                    detail=f"Orthanc rechazó el archivo (no es DICOM válido): {r.text[:200]}")
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Orthanc upload error: {e}")
+        raise HTTPException(status_code=502, detail=f"No se pudo conectar con Orthanc: {e}")
+
+async def orthanc_download(instance_id: str) -> bytes:
+    """Download DICOM bytes from Orthanc by instance ID."""
+    try:
+        async with httpx.AsyncClient(auth=ORTHANC_AUTH, timeout=60.0) as cli:
+            r = await cli.get(f"{ORTHANC_URL}/instances/{instance_id}/file")
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail="Archivo no disponible en Orthanc")
+            if r.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Error al leer Orthanc: {r.text[:200]}")
+            return r.content
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Orthanc download error: {e}")
+        raise HTTPException(status_code=502, detail=f"No se pudo conectar con Orthanc: {e}")
+
+async def orthanc_delete(instance_id: str):
+    try:
+        async with httpx.AsyncClient(auth=ORTHANC_AUTH, timeout=30.0) as cli:
+            await cli.delete(f"{ORTHANC_URL}/instances/{instance_id}")
+    except Exception as e:
+        logger.warning(f"Orthanc delete failed for {instance_id}: {e}")
 
 # ============ ACCESS LOGS (audit trail) ============
 async def log_access(request: Request, user: dict, study: dict, action: str):
@@ -307,18 +359,21 @@ async def upload_study(
     if not doctor:
         raise HTTPException(status_code=400, detail="Médico seleccionado no existe")
 
-    # encrypt and store
-    encrypted = fernet.encrypt(data)
-    study_id = str(uuid.uuid4())
-    fpath = STORAGE_DIR / f"{study_id}.enc"
-    with open(fpath, "wb") as f:
-        f.write(encrypted)
+    # Send to Orthanc (primary storage)
+    orthanc_resp = await orthanc_upload(data)
+    orthanc_instance_id = orthanc_resp.get("ID")
+    orthanc_study_id = orthanc_resp.get("ParentStudy")
+    if not orthanc_instance_id:
+        raise HTTPException(status_code=502, detail="Orthanc no devolvió un ID válido")
 
+    study_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     doc = {
         "id": study_id,
         "filename": file.filename,
-        "storage_path": str(fpath),
+        "storage": "orthanc",
+        "orthanc_id": orthanc_instance_id,
+        "orthanc_study_id": orthanc_study_id,
         "patient_name": patient_name.strip(),
         "patient_document": patient_document,
         "study_description": study_description,
@@ -335,6 +390,14 @@ async def upload_study(
     }
     await db.studies.insert_one(doc)
     await log_access(request, user, doc, "upload")
+    # Create in-app notification for the assigned doctor
+    await create_notification(
+        user_id=doctor["id"],
+        ntype="study_assigned",
+        title="Nuevo estudio asignado",
+        message=f"{user['full_name']} te ha asignado un estudio de {patient_name.strip()}.",
+        study_id=study_id,
+    )
     return _study_public(doc)
 
 @api.get("/studies", response_model=List[StudyOut])
@@ -364,15 +427,19 @@ async def download_study(study_id: str, request: Request, user: dict = Depends(g
     else:
         raise HTTPException(status_code=403, detail="Permiso denegado")
 
-    fpath = Path(doc["storage_path"])
-    if not fpath.exists():
-        raise HTTPException(status_code=404, detail="Archivo no disponible")
-    with open(fpath, "rb") as f:
-        encrypted = f.read()
-    try:
-        data = fernet.decrypt(encrypted)
-    except Exception:
-        raise HTTPException(status_code=500, detail="Error al descifrar el archivo")
+    # Fetch bytes from Orthanc (primary) or legacy local encrypted store
+    if doc.get("storage") == "orthanc" and doc.get("orthanc_id"):
+        data = await orthanc_download(doc["orthanc_id"])
+    else:
+        fpath = Path(doc.get("storage_path", ""))
+        if not fpath.exists():
+            raise HTTPException(status_code=404, detail="Archivo no disponible")
+        with open(fpath, "rb") as f:
+            encrypted = f.read()
+        try:
+            data = fernet.decrypt(encrypted)
+        except Exception:
+            raise HTTPException(status_code=500, detail="Error al descifrar el archivo")
 
     await log_access(request, user, doc, "download")
     return StreamingResponse(
@@ -388,14 +455,75 @@ async def delete_study(study_id: str, request: Request, user: dict = Depends(get
         raise HTTPException(status_code=404, detail="Estudio no encontrado")
     if user["role"] not in ("paciente", "clinica") or doc["uploader_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Solo quien subió el archivo puede eliminarlo")
-    fpath = Path(doc["storage_path"])
-    if fpath.exists():
-        try:
-            fpath.unlink()
-        except Exception:
-            pass
+
+    # Delete from storage
+    if doc.get("storage") == "orthanc" and doc.get("orthanc_id"):
+        await orthanc_delete(doc["orthanc_id"])
+    else:
+        fpath = Path(doc.get("storage_path", ""))
+        if fpath.exists():
+            try:
+                fpath.unlink()
+            except Exception:
+                pass
     await db.studies.delete_one({"id": study_id})
     await log_access(request, user, doc, "delete")
+    return {"ok": True}
+
+# ============ NOTIFICATIONS (in-app) ============
+async def create_notification(user_id: str, ntype: str, title: str, message: str, study_id: Optional[str] = None):
+    entry = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "type": ntype,
+        "title": title,
+        "message": message,
+        "study_id": study_id,
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.notifications.insert_one(entry)
+    except Exception as e:
+        logger.warning(f"Failed to create notification: {e}")
+
+def _notif_public(doc: dict) -> dict:
+    return {
+        "id": doc["id"],
+        "type": doc["type"],
+        "title": doc["title"],
+        "message": doc["message"],
+        "study_id": doc.get("study_id"),
+        "read": bool(doc.get("read")),
+        "created_at": doc["created_at"],
+    }
+
+@api.get("/notifications")
+async def list_notifications(user: dict = Depends(get_current_user), limit: int = 50):
+    docs = await db.notifications.find(
+        {"user_id": user["id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(max(1, min(limit, 200)))
+    return [_notif_public(d) for d in docs]
+
+@api.get("/notifications/unread-count")
+async def unread_count(user: dict = Depends(get_current_user)):
+    c = await db.notifications.count_documents({"user_id": user["id"], "read": False})
+    return {"count": c}
+
+@api.post("/notifications/{notif_id}/read")
+async def mark_read(notif_id: str, user: dict = Depends(get_current_user)):
+    res = await db.notifications.update_one(
+        {"id": notif_id, "user_id": user["id"]}, {"$set": {"read": True}}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notificación no encontrada")
+    return {"ok": True}
+
+@api.post("/notifications/read-all")
+async def mark_all_read(user: dict = Depends(get_current_user)):
+    await db.notifications.update_many(
+        {"user_id": user["id"], "read": False}, {"$set": {"read": True}}
+    )
     return {"ok": True}
 
 # ============ ACCESS LOG ENDPOINTS ============
@@ -461,6 +589,8 @@ async def startup():
     await db.access_logs.create_index("uploader_id")
     await db.access_logs.create_index("doctor_id")
     await db.access_logs.create_index("timestamp")
+    await db.notifications.create_index("user_id")
+    await db.notifications.create_index("created_at")
     # seed admin (as medico for test)
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@medicos.com")
     admin_pwd = os.environ.get("ADMIN_PASSWORD", "admin123")

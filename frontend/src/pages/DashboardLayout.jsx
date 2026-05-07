@@ -1,6 +1,7 @@
 import React from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import NotificationBell from "@/components/NotificationBell";
 import {
   House,
   UploadSimple,
@@ -93,21 +94,25 @@ export default function DashboardLayout() {
 
       {/* Content */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="md:hidden bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between sticky top-0 z-10">
-          <div className="flex items-center gap-2">
+        <header className="bg-white border-b border-slate-200 px-4 md:px-8 py-3 flex items-center justify-between sticky top-0 z-10">
+          <div className="flex items-center gap-2 md:hidden">
             <Heartbeat size={22} weight="duotone" className="text-sky-700" />
             <span className="font-semibold text-slate-900">MedDICOM</span>
           </div>
-          <button
-            onClick={async () => {
-              await logout();
-              navigate("/login");
-            }}
-            className="text-sm text-slate-600"
-            data-testid="mobile-logout-button"
-          >
-            Salir
-          </button>
+          <div className="hidden md:block" />
+          <div className="flex items-center gap-1 md:gap-2">
+            <NotificationBell />
+            <button
+              onClick={async () => {
+                await logout();
+                navigate("/login");
+              }}
+              className="md:hidden text-sm text-slate-600 px-2 py-1"
+              data-testid="mobile-logout-button"
+            >
+              Salir
+            </button>
+          </div>
         </header>
         <main className="flex-1 p-6 md:p-8" data-testid="main-content">
           <Outlet />
