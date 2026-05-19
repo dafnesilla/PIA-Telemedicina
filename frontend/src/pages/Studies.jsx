@@ -2,12 +2,14 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import api, { formatApiError } from "@/lib/api";
+import DicomViewer from "@/components/DicomViewer";
 import {
   DownloadSimple,
   Trash,
   FolderOpen,
   MagnifyingGlass,
   UploadSimple,
+  Eye,
 } from "@phosphor-icons/react";
 
 export default function Studies() {
@@ -15,6 +17,7 @@ export default function Studies() {
   const [studies, setStudies] = useState(null);
   const [q, setQ] = useState("");
   const [err, setErr] = useState("");
+  const [viewing, setViewing] = useState(null);
 
   const load = async () => {
     try {
@@ -173,6 +176,14 @@ export default function Studies() {
                     <Td className="text-right">
                       <div className="inline-flex items-center gap-2">
                         <button
+                          onClick={() => setViewing(s)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white border border-slate-300 hover:border-sky-500 hover:text-sky-700 text-slate-700 rounded-md transition-colors"
+                          data-testid={`view-study-${s.id}`}
+                        >
+                          <Eye size={14} weight="bold" />
+                          Ver
+                        </button>
+                        <button
                           onClick={() => onDownload(s)}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-sky-700 hover:bg-sky-600 text-white rounded-md transition-colors"
                           data-testid={`download-study-${s.id}`}
@@ -198,6 +209,9 @@ export default function Studies() {
             </table>
           </div>
         </div>
+      )}
+      {viewing && (
+        <DicomViewer study={viewing} onClose={() => setViewing(null)} />
       )}
     </div>
   );

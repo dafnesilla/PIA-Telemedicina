@@ -291,6 +291,32 @@ async def orthanc_delete(instance_id: str):
     except Exception as e:
         logger.warning(f"Orthanc delete failed for {instance_id}: {e}")
 
+async def orthanc_get_json(path: str) -> dict:
+    try:
+        async with httpx.AsyncClient(auth=ORTHANC_AUTH, timeout=30.0) as cli:
+            r = await cli.get(f"{ORTHANC_URL}{path}")
+            if r.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Orthanc error: {r.text[:200]}")
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo conectar con Orthanc: {e}")
+
+async def orthanc_get_image(path: str) -> bytes:
+    try:
+        async with httpx.AsyncClient(auth=ORTHANC_AUTH, timeout=60.0) as cli:
+            r = await cli.get(f"{ORTHANC_URL}{path}")
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail="Imagen no disponible")
+            if r.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Orthanc error: {r.text[:200]}")
+            return r.content
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo conectar con Orthanc: {e}")
+
 # ============ ACCESS LOGS (audit trail) ============
 async def log_access(request: Request, user: dict, study: dict, action: str):
     """Record an audit trail entry for a study action."""
@@ -447,6 +473,58 @@ async def download_study(study_id: str, request: Request, user: dict = Depends(g
         media_type="application/dicom",
         headers={"Content-Disposition": f'attachment; filename="{doc["filename"]}"'},
     )
+
+def _check_study_access(user: dict, doc: dict):
+    if user["role"] == "medico":
+        if doc["doctor_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="No tienes acceso a este estudio")
+    elif user["role"] in ("paciente", "clinica"):
+        if doc["uploader_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="No tienes acceso a este estudio")
+    else:
+        raise HTTPException(status_code=403, detail="Permiso denegado")
+
+@api.get("/studies/{study_id}/info")
+async def study_info(study_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.studies.find_one({"id": study_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Estudio no encontrado")
+    _check_study_access(user, doc)
+    if not (doc.get("storage") == "orthanc" and doc.get("orthanc_id")):
+        return {"viewable": False, "frames": 0, "tags": {},
+                "reason": "Vista previa no disponible (estudio legacy fuera de Orthanc)"}
+    try:
+        tags = await orthanc_get_json(f"/instances/{doc['orthanc_id']}/simplified-tags")
+    except Exception:
+        tags = {}
+    frames = 1
+    try:
+        frames_resp = await orthanc_get_json(f"/instances/{doc['orthanc_id']}/frames")
+        if isinstance(frames_resp, list):
+            frames = max(1, len(frames_resp))
+    except Exception:
+        pass
+    keep = ["PatientName", "PatientID", "PatientBirthDate", "PatientSex",
+            "StudyDescription", "SeriesDescription", "Modality",
+            "StudyDate", "StudyTime", "Manufacturer", "Rows", "Columns",
+            "BodyPartExamined", "InstitutionName"]
+    safe_tags = {k: tags.get(k) for k in keep if tags.get(k)}
+    return {"viewable": True, "frames": frames, "tags": safe_tags}
+
+@api.get("/studies/{study_id}/preview")
+async def study_preview(study_id: str, frame: int = 0, user: dict = Depends(get_current_user)):
+    doc = await db.studies.find_one({"id": study_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Estudio no encontrado")
+    _check_study_access(user, doc)
+    if not (doc.get("storage") == "orthanc" and doc.get("orthanc_id")):
+        raise HTTPException(status_code=400, detail="Vista previa no disponible (estudio legacy)")
+    if frame and frame > 0:
+        path = f"/instances/{doc['orthanc_id']}/frames/{frame}/preview"
+    else:
+        path = f"/instances/{doc['orthanc_id']}/preview"
+    image_bytes = await orthanc_get_image(path)
+    return StreamingResponse(io.BytesIO(image_bytes), media_type="image/png")
 
 @api.delete("/studies/{study_id}")
 async def delete_study(study_id: str, request: Request, user: dict = Depends(get_current_user)):
